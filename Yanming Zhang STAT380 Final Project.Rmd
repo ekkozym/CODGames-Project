@@ -1,0 +1,325 @@
+---
+title: "Final Project"
+date: "5/2/2023"
+author: "Jingcheng Xiao, Yanming Zhang, XingYe Tan, Pengyu Tao"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Front Matter
+```{r, message=FALSE, warning=FALSE}
+rm(list = ls())
+#Add libraries as needed
+library(tidyverse)
+library(mosaic)
+library(glmnet)
+library(rpart)
+library(rattle)
+library(fuzzyjoin)
+library(randomForest)
+library(e1071)
+```
+
+
+## Group Member
+
+-   Jingcheng Xiao (Steve)
+
+-   Xingye Tan (Aiden)
+
+-   Pengyu Tao
+
+-   Yanming Zhang
+
+## Load Data
+
+```{r}
+Player1 <- read.csv(file = "CODGames_p1_380.csv")
+Player2 <- read.csv(file = "CODGames_p2_380.csv")
+Maps <- read.csv(file = "CODMaps.csv")
+Modes <- read.csv(file = "CODGameModes.csv")
+```
+
+## Task 1
+
+-   The first thing I wanted to do was to combine the data of two different players into one named MapTotal, and then use a for loop to split the ratio of the variable MapVote into two numbers recorded before and after as Vote1 and Vote2. Then two new variables Map1Vote and Map2Vote are created based on the size relationship between the two variables Vote1 and Vote2, which represent the results of the voting choices of map1 and map2 in one game selection map. Both variables have three levels: win, lose and draw. After that I combined each map in map1 and map2 times voting respectively to record the situation. Then this map in Moscow as an example, it sometimes appears in Map1 selection and sometimes in Map2 selection. I recorded all its votes in map1, and then recorded its votes in map2 and merged the two. Eventually this way I got all the maps to win or not in each case as one candidate. The next thing I had to deal with was some data quality issues. Through a lot of searching and learning I finally found a function called stringdist_left_join from the fuzzyjoin package. At first I chose inner join but I found that there were less rows in the data after inner, which means that a few of them are not matched and will be deleted automatically. So I chose to LEFT join the correct map name to our MapVote and see which rows would have NA appear. By looking at the NA values, I realized that the rows in the data where the map name was recorded as "Collateral" and "Nuketown '84 Halloween" were having problems getting changed to the correct ones automatically. I couldn't achieve my goal by changing the parameter settings in stringdist_left_join, so I had to manually find out which line map names in MapVote were "Collateral" and change them to the correct "Collateral Strike", and change "Nuketown '84 Halloween" to "Nuketown '84". Finally, join MapVote and Maps left. For the data visualization, I chose to add a bar chart with percentage and sort it from highest to lowest win rate. Through graphs and summary statistics, I realized that Jungle was the map that was most likely to win if it was a candidate with 64.29\% win rate.	
+
+```{r}
+MapP1 <- Player1[!Player1$MapVote == "",] %>%
+  select(1:4) 
+
+MapP2 <- Player2[!Player2$MapVote == "",] %>%
+  select(1:4)
+  
+MapTotal <- rbind(MapP1,MapP2)
+```
+
+```{r}
+for (i in 1 : nrow(MapTotal)) {
+  MapTotal$Vote1[i] <- unlist(str_extract_all(MapTotal$MapVote[i],"[0-9]+"))[1]
+  MapTotal$Vote2[i] <- unlist(str_extract_all(MapTotal$MapVote[i],"[0-9]+"))[2]
+}
+```
+
+
+```{r}
+MapTotal <- MapTotal %>%
+  mutate(Map1Vote = ifelse(Vote1 > Vote2, "Win", ifelse(Vote1 == Vote2, "Draw", "Lose")),
+         Map2Vote = ifelse(Vote1 < Vote2, "Win", ifelse(Vote1 == Vote2, "Draw", "Lose"))) 
+
+Map1 <- MapTotal %>%
+  select(Map1,Map1Vote) %>%
+  rename(Map = Map1, Vote = Map1Vote)
+
+
+Map2 <- MapTotal %>%
+  select(Map2,Map2Vote) %>%
+  rename(Map = Map2, Vote = Map2Vote)
+
+MapVote <- rbind(Map1,Map2)
+```
+
+
+```{r}
+MapVote %>%
+  stringdist_left_join(Maps, by = c(Map = "Name")) %>%
+  filter(is.na(Name))
+```
+
+
+```{r}
+which(MapVote$Map == "Collateral")
+which(MapVote$Map == "Nuketown '84 Halloween")
+```
+
+
+```{r}
+MapVote[c(213, 229, 885, 894, 917),1] <- "Collateral Strike"
+MapVote[1071,1] <- "Nuketown '84"
+```
+
+
+```{r}
+MapVote <- MapVote %>%
+  stringdist_inner_join(Maps, by = c(Map = "Name")) %>%
+  select(Name, Vote) %>%
+  rename(Map = Name)
+```
+
+
+
+```{r}
+MapVote %>%
+  group_by(Map) %>%
+  summarise(Proportion = sum(Vote == "Win")/n()) %>%
+  arrange(desc(Proportion))
+```
+
+
+```{r}
+MapVote %>%
+  left_join(
+    MapVote %>%
+      group_by(Map) %>%
+      mutate(Prop = sum(Vote == "Win")/n()) %>%
+      ungroup() %>%
+      select(Map, Prop) %>%
+      distinct()
+  ) %>%
+  mutate(Map = fct_reorder(Map, Prop),
+         Vote = factor(Vote, levels = c("Lose", "Draw", "Win"))) %>%
+  ggplot(aes(Map, fill = Vote)) +
+  geom_bar(position = "fill") + 
+  scale_y_continuous(labels = scales::percent) +
+  coord_flip() +
+  theme_light() +
+  labs(x = "Name of map",
+       y = "Proportions")
+```
+
+
+
+## Task 2
+
+#### Wrangling Data
+
+```{r}
+Player1$Type <- NA
+Player2$Type<-NA
+
+for (i in 1:nrow(Player1)){
+  if("HC - TDM" %in% Player1$GameType[i] | "TDM" %in% Player1$GameType[i]){
+   Player1$Type[i]<-"TDM"
+  } else if ("HC - Hardpoint" %in% Player1$GameType[i] | "Hardpoint" %in% Player1$GameType[i] ){
+    Player1$Type[i]<-"Hardpoint"
+  } else if ("HC - Domination" %in% Player1$GameType[i] | "Domination" %in% Player1$GameType[i] ){
+     Player1$Type[i]<-"Domination"
+  } else{
+    Player1$Type[i]<-"Kill Confirmed"
+  }
+}
+
+for (i in 1:nrow(Player2)){
+  if("HC - TDM" %in% Player2$GameType[i]){
+   Player2$Type[i]<-"TDM"
+  } else if ("HC - Hardpoint" %in% Player2$GameType[i]){
+    Player2$Type[i]<-"Hardpoint"
+  } else if ("HC - Domination" %in% Player2$GameType[i]){
+     Player2$Type[i]<-"Domination"
+  } else{
+    Player2$Type[i]<-"Kill Confirmed"
+  }
+}
+
+
+```
+
+
+#### Combined Dataset And create indicators Varibales
+
+```{r}
+New_player1<-Player1%>%
+  select(Type, Score, TotalXP)%>%
+  rename(GameType= Type)
+
+New_player2<-Player2%>%
+  select(Type, Score, TotalXP)%>%
+  rename(GameType= Type)
+
+Comb_players <- rbind(New_player2,New_player1)
+
+
+## Base line is "Kill Confirmed"
+Comb_players<-Comb_players%>%
+  mutate(Hardpoint = ifelse(GameType=="Hardpoint",1,0),
+         TDM=ifelse(GameType=="TDM",1,0),
+         Domination=ifelse(GameType=="Domination",1,0))
+```
+
+#### Data Visualization 
+```{r,warning=FALSE}
+ggplot(Comb_players) +
+  aes(x = Score, y = TotalXP, colour = GameType) +
+  geom_point(shape = "circle") +
+  scale_color_hue(direction = 1) +
+  labs(y = "Total Experience Points", title = "Scatter plot") +
+  theme_gray()
+```
+
+-   From the above Scatter plot, we can see some relationships about `TotalXP`, `GameType` and `Score`, first we only look at `TotalXP` and `Score`, these two variables are positive linear relationship, the higher the score obtained in the game, the higher the experience gained. After accounting for the Score, I used four different colors to represent different game types, the most distributed colors are green and purple, representing Hardpoint and TDM game types respectively. On the whole, the Hardpoint, which is the green point, has a small number of points distributed in a higher position than the other points, and the blue point Kill Confirmed is in a lower position compared to the other three types. The purple points are distributed very evenly it is difficult to make certain conclusion. In other words, the experience value gained by playing Hardpoint is generally higher than the other three types, the experience value gained by kill Confirmed will be relatively low, while the experience value gained by the TDM type is very average, and the last type Domination is higher than the experience value gained by kill Confirmed.
+
+
+#### Build Model
+
+```{r}
+model<-lm(TotalXP ~Score+ Hardpoint + TDM + Domination , data = Comb_players)
+summary(model)
+```
+
+The estimated regression equation is given by:
+
+$$\hat{y}_i = 5369.4186  + 2.7052 x_{i,Score} + 3824.9341  x_{i,Hardpoint} + 1132.7362  x_{i,TDM} + 3703.1728  x_{i,Domination}$$
+
+
+#### Interpret the Research Question 
+
+-   $\hat{\beta_0}=5369.4186$: The average of total experience points is 5369.4186 for Kill Confirmed type with 0 Score.
+
+-   $\hat{\beta_1}=2.7052$: As the Score increase by 1, we expect the total experience point increases by 2.7052, on average, we are assuming the type of game does not change.
+
+-   $\hat{\beta_2}=3824.9341$: As we go from Kill Confirmed type to Hardpoint type, we expect the total experience points increase by 3824.9341, on average, assuming score do not change.
+
+-   $\hat{\beta_3}=1132.7362$: As we go from Kill Confirmed type to TDM type, we expect the total experience points increase by 1132.7362, on average, assuming score do not change.
+
+-   $\hat{\beta_4}=3703.1728$: As we go from Kill Confirmed type to Domination type, we expect the total experience points increase by 3703.1728, on average, assuming score do not change.
+
+
+## Task 3
+
+
+#### Wrangling Data
+```{r}
+p1 <- Player1 %>%
+  select(FullPartial, Result, Eliminations, Deaths, Score, Damage) %>%
+  filter(FullPartial == "Full") %>%
+  filter(!is.na(Eliminations) & !is.na(Deaths) & !is.na(Score) & !is.na(Damage) & !is.na(Result)) %>%
+  mutate(if_win = if_else(as.numeric(str_extract(Result, "\\d+")) > as.numeric(str_extract(Result, "\\d+$")), 1, 0))
+```
+
+
+#### Set Seed
+
+```{r}
+set.seed(123)
+train_ind <- sample(nrow(p1), floor(0.85 * nrow(p1)))
+set.seed(NULL)
+                    
+Train <- p1[train_ind, ]
+Test <- p1[-train_ind, ]
+```
+
+#### Logistic Regression
+
+```{r}
+log_model <- glm(if_win ~ Eliminations + Deaths + Score + Damage, family = binomial, data = Train)
+summary(log_model)
+
+#Predict
+log_pred <- predict(log_model, newdata = Train, type = "response")
+
+#Accuracy
+log_accuracy <- mean((log_pred >= 0.5) == Test$if_win)
+log_accuracy
+```
+
+
+#### Random Forest
+
+```{r}
+model2_rf <- randomForest(as.factor(if_win) ~ Eliminations + Deaths + Score + Damage, data = Train, ntree = 500)
+
+pred_surv2_rf <- predict(model2_rf, newdata = Test, type = "response")
+
+mean(pred_surv2_rf == Test$if_win)
+
+summary(model2_rf)
+```
+
+
+#### Support Vector Machine
+
+```{r}
+model3_svm <- svm(as.factor(if_win) ~ Eliminations + Deaths + Score + Damage, data = Train)
+
+pred_surv3_svm <- predict(model3_svm, newdata = Test)
+
+mean(pred_surv3_svm == Test$if_win)
+
+summary(model3_svm)
+```
+
+
+
+
+#### Report
+
+  In the task 3, we are asked to set a research question and use 3 different ways to build models and compare these models. So,we set up the research question: In "CODGames_p1_380.csv" data, how does the `Eliminations`, `Deaths`, `Score`, `Damage` affect the game Win or not when the game is Full game? We should predict the game Win or not, which is a categorical variable. 
+  
+  In order to answer our research question, we have to create a new variable just like we did in mini-project. We should create a new variable which shows the result is win or not. We make the lose and draw as "not win", so that in the new variable `Win`, 0 means "not win" and 1 means "win". We also select `FullPartial`, `Result`, `Eliminations`, `Deaths`, `Score`, `Damage` in the new data "p1". 
+  
+  We consider that some models require the Train/Test, so we have unified Train/Test by using s, 85/15 training/testing split using seed of (123). We choose to use "Random Forest", "Logistic Regression", and "Support Vector Machine" as our models, and we can compare each model's Accuracy to get which model is best. 
+  
+  Logistic regression is a statistical method for modeling the probability of a binary response variable. It estimates coefficients for predictors and applies logistic functions to convert linear combinations of predictors into probabilities. In this case, we will use the glm function in R to build a logistic regression model. We set up threshold equals to 0.5. To find Accuracy, we can use the mean of the logical statement that compares the predicted probabilities to a threshold of 0.5, indicating whether the prediction is a win or loss.
+  
+  Random Forest builds multiple decision trees on random subsets of the training data and combines their predictions to produce a final prediction. This helps to reduce overfitting and improve the accuracy of the model. In this case, we use the 'randomForest' package in R to build a Random Forest model. To find Accuracy, we can use the mean of the logical statement that directly compares the predicted outcome to the actual outcome.
+  
+  Support Vector Machine (SVM) is a type of machine learning algorithm that seeks to find the best hyperplane in a higher-dimensional space to separate the data points into different classes with the maximum possible margin between the classes. SVMs are especially useful when the data cannot be easily separated by a straight line or plane, as they can use kernel functions to transform the data into a higher-dimensional space where linear separation is possible. In this case, we use the svm function from the 'e1071' package in R to create an SVM model. To find Accuracy, we can use the mean of the logical statement that compares the predicted class to the actual class. In each case, a higher mean value indicates a more accurate model.
+  
+  After we built three models, we calculate the Accuracy for each model: the Accuracy for Logistic Regression is 0.4692483; the Accuracy for Random Forest is 0.5897436; the Accuracy for Support Vector Machine is 0.6410256. According to the result, the Support Vector Machine has the higher Accuracy, which means the Support Vector Machine is the best model for the research question. 
+  
+  
